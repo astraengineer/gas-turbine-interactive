@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gas turbine: follow the gas</title>
+<style>
+:root{--bg:#eef0f2;--fg:#15181d;--mut:#586070;--card:rgba(255,255,255,.93);--bd:#c9ced6;--ac:#e8590c;--sel:#e3e8ef;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b0f14;--fg:#e8ecf1;--mut:#9aa5b4;--card:rgba(16,21,28,.92);--bd:#2b3441;--sel:#232c39}}
+:root[data-theme="dark"]{--bg:#0b0f14;--fg:#e8ecf1;--mut:#9aa5b4;--card:rgba(16,21,28,.92);--bd:#2b3441;--sel:#232c39}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 "Segoe UI",system-ui,sans-serif}
+#app{position:relative;height:100%;overflow:hidden}
+canvas{display:block;width:100%;height:100%;background:radial-gradient(ellipse at 50% 40%,#1b2431,#06090d);touch-action:none;cursor:grab}
+#panel{position:absolute;left:12px;top:12px;width:310px;max-height:calc(100% - 24px);overflow:auto;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px;backdrop-filter:blur(8px)}
+h1{font:600 18px/1.2 Georgia,"Times New Roman",serif;margin:0 0 6px}
+p{margin:0 0 10px;color:var(--mut)}
+button{font:inherit;color:var(--fg);background:transparent;border:1px solid var(--bd);border-radius:6px;padding:6px 10px;cursor:pointer;text-align:left}
+button:focus-visible,input:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+#follow{width:100%;background:var(--ac);color:#fff;border-color:var(--ac);font-weight:600;text-align:center;margin-bottom:10px}
+#stages{display:grid;gap:4px;margin-bottom:10px}
+#stages button{display:flex;align-items:center;gap:8px}
+#stages button.on{background:var(--sel);border-color:var(--ac)}
+.dot{width:10px;height:10px;border-radius:50%;flex:none}
+#info{border-left:3px solid var(--ac);padding:2px 0 2px 10px;margin-bottom:12px;min-height:84px}
+#info b{display:block;margin-bottom:2px}
+label{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:6px 0;color:var(--mut)}
+input[type=range]{flex:1;accent-color:var(--ac)}
+small{color:var(--mut);display:block;margin-top:8px}
+@media (max-width:640px){#panel{left:8px;right:8px;top:auto;bottom:8px;width:auto;max-height:48%}}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+</style></head>
+<body><div id="app"><canvas id="c"></canvas>
+<div id="panel">
+<h1>How a gas turbine works</h1>
+<p>Air is sucked in, squeezed, heated by burning fuel, then blown through turbines that pull the energy out. Ride along with one parcel of air.</p>
+<button id="follow">Follow the gas</button>
+<div id="stages"></div>
+<div id="info"></div>
+<label>Take apart <input id="ex" type="range" min="0" max="1" step="0.01" value="0"></label>
+<label>Flow speed <input id="sp" type="range" min="0" max="2" step="0.05" value="1"></label>
+<label>Cutaway casing <input id="cut" type="checkbox" checked></label>
+<button id="reset">Reset view</button>
+<small>Drag to orbit, scroll to zoom, click a part to inspect it.</small>
+</div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=s=>document.querySelector(s), lerp=(a,b,t)=>a+(b-a)*t, clamp=(v,a,b)=>Math.min(Math.max(v,a),b);
+const AD=THREE.AdditiveBlending, DS=THREE.DoubleSide;
+const cv=$('#c'), R=new THREE.WebGLRenderer({canvas:cv,antialias:true});
+R.localClippingEnabled=true; R.setPixelRatio(Math.min(devicePixelRatio,2));
+const scene=new THREE.Scene(), cam=new THREE.PerspectiveCamera(40,1,.1,100);
+scene.add(new THREE.AmbientLight(0x8899aa,.8));
+const d1=new THREE.DirectionalLight(0xffffff,1.1); d1.position.set(3,6,8); scene.add(d1);
+const d2=new THREE.DirectionalLight(0x6688ff,.5); d2.position.set(-5,-3,-6); scene.add(d2);
+const fl=new THREE.PointLight(0xff7a2a,1,6); scene.add(fl);
+const plane=new THREE.Plane(new THREE.Vector3(0,0,-1),0);
+
+// flow path geometry: nodes along the engine axis
+const XS=[-6,-4.5,-1.5,.2,1.7,3.9,5.8], H=[.15,.2,.4,.4,.45,.5,.1], C=[1.1,.95,.6,.85,.85,1.15,1.4];
+function interp(A,x){x=clamp(x,XS[0],XS[6]);let k=0;while(k<5&&x>XS[k+1])k++;return lerp(A[k],A[k+1],(x-XS[k])/(XS[k+1]-XS[k]))}
+
+const M=(c,o={})=>new THREE.MeshStandardMaterial(Object.assign({color:c,metalness:.7,roughness:.35},o));
+const cas=[]; const CM=c=>{const m=M(c,{transparent:true,opacity:.3,side:DS,metalness:.4,clippingPlanes:[plane]});cas.push(m);return m};
+function cyl(p,x0,x1,r0,r1,mat,open){const g=new THREE.CylinderGeometry(r1,r0,x1-x0,48,1,!!open);g.rotateZ(-Math.PI/2);g.translate((x0+x1)/2,0,0);const m=new THREE.Mesh(g,mat);m.userData.s=p.userData.i;p.add(m);return m}
+const bg=new THREE.BoxGeometry(.035,1,.15);
+function ring(p,x,n,mat,pitch,disc){
+  const h=interp(H,x),c=interp(C,x)-.02;
+  if(disc){const g=new THREE.CylinderGeometry(h+.03,h+.03,.07,32);g.rotateZ(Math.PI/2);g.translate(x,0,0);const m=new THREE.Mesh(g,mat);m.userData.s=p.userData.i;p.add(m)}
+  for(let i=0;i<n;i++){const pv=new THREE.Object3D();pv.rotation.x=i/n*Math.PI*2;
+    const b=new THREE.Mesh(bg,mat);b.scale.y=c-h;b.position.set(x,h+(c-h)/2,0);b.rotation.y=pitch;b.userData.s=p.userData.i;pv.add(b);p.add(pv)}
+}
+const secs=[];
+for(let i=0;i<6;i++){const g=new THREE.Group();g.userData.i=i;const r=new THREE.Group();r.userData.i=i;g.add(r);g.rot=r;scene.add(g);secs.push(g)}
+const [S0,S1,S2,S3,S4,S5]=secs;
+const MB=M(0xc9d3e0), MS=M(0x56657a), MT=M(0xd9a35f,{emissive:0x401500}), HUB=M(0xaab4c2), STEEL=M(0x7a7f87);
+
+// 0 intake
+cyl(S0,-6,-4.5,C[0]+.04,C[1]+.04,CM(0x9aa7b8),true); cyl(S0,-6,-4.5,H[0],H[1],HUB); ring(S0,-4.7,6,MS,.3,false);
+// 1 compressor
+cyl(S1,-4.5,-1.5,C[1]+.04,C[2]+.04,CM(0x9aa7b8),true); cyl(S1.rot,-4.5,-1.5,H[1],H[2],HUB);
+for(let i=0;i<7;i++){const x=-4.3+i*.4;ring(S1.rot,x,28-i,MB,.5,true);ring(S1,x+.2,24,MS,-.5,false)}
+// 2 combustor
+cyl(S2,-1.6,.3,.98,.98,CM(0xa08f86),true); cyl(S2,-1.5,.2,.4,.4,STEEL);
+cyl(S2,-1.3,.1,.66,.66,new THREE.MeshBasicMaterial({color:0xff6a1a,transparent:true,opacity:.3,side:DS,blending:AD,depthWrite:false}),true);
+{const ng=new THREE.ConeGeometry(.06,.28,12);ng.rotateZ(-Math.PI/2);ng.translate(-1.4,.66,0);
+ for(let i=0;i<10;i++){const pv=new THREE.Object3D();pv.rotation.x=i/10*6.283;const m=new THREE.Mesh(ng,new THREE.MeshBasicMaterial({color:0xffd27a}));m.userData.s=2;pv.add(m);S2.add(pv)}}
+// 3 gas generator turbine
+cyl(S3,.2,1.7,C[3]+.04,C[4]+.04,CM(0xa07a5a),true); cyl(S3.rot,.2,1.7,H[3],H[4],M(0xb08a6a));
+[.35,1.05].forEach(x=>ring(S3,x,18,MS,-.6,false)); [.65,1.35].forEach(x=>ring(S3.rot,x,30,MT,.6,true));
+// 4 power turbine
+cyl(S4,1.7,3.9,C[4]+.04,C[5]+.04,CM(0xa0705a),true); cyl(S4.rot,1.7,3.9,H[4],H[5],M(0xb08a6a));
+[1.9,2.65,3.4].forEach(x=>ring(S4,x,22,MS,-.6,false)); [2.2,2.95,3.7].forEach((x,i)=>ring(S4.rot,x,34+i*4,MT,.6,true));
+// 5 exhaust
+cyl(S5,3.9,5.8,C[5]+.04,C[6]+.04,CM(0x9aa7b8),true); cyl(S5,3.9,5.8,H[5],H[6],HUB); ring(S5,4.1,5,MS,0,false);
+// shafts (two separate: compressor shaft, power shaft)
+const SH=M(0xe0c070,{metalness:.9,roughness:.25});
+const shG=new THREE.Group();shG.userData.i=3;cyl(shG,-4.5,1.7,.16,.16,SH);scene.add(shG);
+const shP=new THREE.Group();shP.userData.i=4;cyl(shP,1.7,5.2,.11,.11,SH);scene.add(shP);
+
+// explode offsets
+let E=0,Etarget=0;
+const CS=[-5.25,-3,-.65,.95,2.8,4.85], offK=k=>E*1.15*(k-2.5);
+function off(x){if(x<=CS[0])return offK(0);if(x>=CS[5])return offK(5);let k=0;while(x>CS[k+1])k++;return lerp(offK(k),offK(k+1),(x-CS[k])/(CS[k+1]-CS[k]))}
+
+// gas model
+const STOPS=[[0,.3,.6,1],[.3,.75,.92,1],[.42,1,.7,.35],[.7,1,.45,.1],[1,1,.92,.7]];
+function temp(x){if(x<-4.5)return 0;if(x<-1.5)return lerp(0,.3,(x+4.5)/3);if(x<-.9)return .3;if(x<-.1)return lerp(.3,1,(x+.9)/.8);if(x<.2)return 1;if(x<3.9)return lerp(1,.62,(x-.2)/3.7);return lerp(.62,.5,(x-3.9)/1.9)}
+function tcol(t,o,i){let k=0;while(k<3&&t>STOPS[k+1][0])k++;const a=STOPS[k],b=STOPS[k+1],u=clamp((t-a[0])/(b[0]-a[0]),0,1);o[i]=lerp(a[1],b[1],u);o[i+1]=lerp(a[2],b[2],u);o[i+2]=lerp(a[3],b[3],u)}
+const vel=x=>x<-4.5?1.1:x<-1.5?.8:x<.2?.6:x<3.9?1.4:1;
+function place(x,f,ph,o,i){const r=lerp(interp(H,x)+.03,interp(C,x)-.03,f);o[i]=x+off(x);o[i+1]=r*Math.cos(ph);o[i+2]=r*Math.sin(ph)}
+const N=1500, PX=new Float32Array(N), PF=new Float32Array(N), PP=new Float32Array(N), pos=new Float32Array(N*3), col=new Float32Array(N*3);
+for(let i=0;i<N;i++){PX[i]=lerp(-6.3,5.8,Math.random());PF[i]=Math.random();PP[i]=Math.random()*6.283}
+const pg=new THREE.BufferGeometry();pg.setAttribute('position',new THREE.BufferAttribute(pos,3));pg.setAttribute('color',new THREE.BufferAttribute(col,3));
+const pts=new THREE.Points(pg,new THREE.PointsMaterial({size:.07,vertexColors:true,transparent:true,opacity:.9,blending:AD,depthWrite:false}));pts.frustumCulled=false;scene.add(pts);
+// tracer
+let tx=-6.3,tf=.5,tph=0;const tpos=new Float32Array(3),tcl=new Float32Array(3);
+const tracer=new THREE.Mesh(new THREE.SphereGeometry(.11,16,16),new THREE.MeshBasicMaterial({color:0xffffff}));scene.add(tracer);
+const TL=80,trail=[],tgeo=new THREE.BufferGeometry(),tline=new THREE.Line(tgeo,new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:.7}));tline.frustumCulled=false;scene.add(tline);
+
+// stages
+const ST=[
+ {n:'1. Intake',r:-4.5,c:'#6fb4ff',t:'Air is pulled in at normal pressure and temperature. A bell-shaped mouth guides it smoothly into the compressor.'},
+ {n:'2. Compressor: squeeze',r:-1.5,c:'#bfe6ff',t:'Spinning rotor blades push air rearward; fixed stator vanes slow it, turning speed into pressure. Stage after stage the air is squeezed to roughly 15 to 30 times atmospheric pressure and heats up to several hundred °C.'},
+ {n:'3. Combustor: bang',r:.2,c:'#ff9a3c',t:'Fuel is sprayed in and burns as a steady flame at nearly constant pressure, lifting the gas to about 1,200 to 1,500 °C. It is continuous burning, not explosions.'},
+ {n:'4. Gas generator turbine',r:1.7,c:'#ff7a1a',t:'The first turbine shares a shaft with the compressor. It takes just enough energy from the hot gas to keep the compressor spinning, which makes the engine self-sustaining.'},
+ {n:'5. Power turbine: blow',r:3.9,c:'#f05a28',t:'A second turbine on its own shaft, mechanically free of the first. It captures the remaining energy as useful shaft power for a generator, pump or propeller, at its own speed.'},
+ {n:'6. Exhaust',r:5.8,c:'#c9622e',t:'Gas leaves still hot (roughly 400 to 600 °C) but at low pressure. In combined-cycle plants that heat boils water to drive a steam turbine.'}];
+const stageAt=x=>{let k=0;while(k<5&&x>ST[k].r)k++;return k};
+const lst=$('#stages');
+ST.forEach((s,i)=>{const b=document.createElement('button');b.innerHTML='<span class="dot" style="background:'+s.c+'"></span>'+s.n;b.onclick=()=>pick(i);lst.appendChild(b)});
+let sel=-1,shown=-2,follow=false;
+function showInfo(){if(shown===sel)return;shown=sel;[...lst.children].forEach((b,i)=>b.classList.toggle('on',i===sel));
+ $('#info').innerHTML=sel<0?'<b>Nothing selected</b>Choose a stage, click a part, or press Follow the gas.':'<b>'+ST[sel].n+'</b>'+ST[sel].t}
+function pick(i){sel=i;follow=false;$('#follow').textContent='Follow the gas';distGoal=6.5}
+$('#follow').onclick=()=>{follow=!follow;if(follow){tx=-6.3;trail.length=0;distGoal=4.5;sel=0}else{distGoal=9}$('#follow').textContent=follow?'Stop following':'Follow the gas'};
+$('#reset').onclick=()=>{follow=false;sel=-1;tgtGoal.set(0,0,0);distGoal=15;yaw=.5;pit=.28;$('#follow').textContent='Follow the gas'};
+$('#ex').oninput=e=>Etarget=+e.target.value;
+$('#cut').onchange=e=>cas.forEach(m=>m.clippingPlanes=e.target.checked?[plane]:[]);
+
+// camera
+let yaw=.5,pit=.28,dist=15,distGoal=15;const tgt=new THREE.Vector3(),tgtGoal=new THREE.Vector3();
+let drag=false,moved=0,lx=0,ly=0;
+cv.addEventListener('pointerdown',e=>{drag=true;moved=0;lx=e.clientX;ly=e.clientY;cv.setPointerCapture(e.pointerId);cv.style.cursor='grabbing'});
+cv.addEventListener('pointermove',e=>{if(!drag)return;const dx=e.clientX-lx,dy=e.clientY-ly;lx=e.clientX;ly=e.clientY;moved+=Math.abs(dx)+Math.abs(dy);yaw-=dx*.006;pit=clamp(pit+dy*.006,-1.4,1.4)});
+cv.addEventListener('pointerup',e=>{drag=false;cv.style.cursor='grab';if(moved<5)click(e)});
+cv.addEventListener('wheel',e=>{e.preventDefault();distGoal=clamp(distGoal*Math.exp(e.deltaY*.001),3,30)},{passive:false});
+const rc=new THREE.Raycaster(),mv=new THREE.Vector2();
+function click(e){const b=cv.getBoundingClientRect();mv.set((e.clientX-b.left)/b.width*2-1,-((e.clientY-b.top)/b.height)*2+1);rc.setFromCamera(mv,cam);
+ const cut=$('#cut').checked;
+ const h=rc.intersectObjects(scene.children,true).find(o=>o.object.userData.s!==undefined&&!(cut&&cas.includes(o.object.material)&&o.point.z>0));
+ if(h)pick(h.object.userData.s)}
+function resize(){const a=$('#app');R.setSize(a.clientWidth,a.clientHeight,false);cam.aspect=a.clientWidth/a.clientHeight;cam.updateProjectionMatrix()}
+new ResizeObserver(resize).observe($('#app'));resize();
+
+let last=performance.now(),clock=0;
+function frame(now){
+ const dt=Math.min((now-last)/1000,.05);last=now;clock+=dt;
+ const sp=+$('#sp').value;
+ E+=(Etarget-E)*Math.min(1,dt*6);
+ secs.forEach((g,k)=>g.position.x=offK(k));
+ shG.position.set(off(-1.4),E*1.9,0);shP.position.set(off(3.45),-E*1.9,0);
+ const w1=7*sp*dt,w2=3.5*sp*dt;
+ S1.rot.rotation.x+=w1;S3.rot.rotation.x+=w1;shG.rotation.x+=w1;S4.rot.rotation.x+=w2;shP.rotation.x+=w2;
+ // particles
+ for(let i=0;i<N;i++){let x=PX[i]+1.6*vel(PX[i])*sp*dt;
+  if(x>5.8){x=-6.3;PF[i]=Math.random();PP[i]=Math.random()*6.283}
+  PX[i]=x;PP[i]+=(x>-4.5&&x<-1.5||x>.2&&x<3.9?2:.5)*sp*dt;
+  place(x,PF[i],PP[i],pos,i*3);tcol(temp(x),col,i*3)}
+ pg.attributes.position.needsUpdate=pg.attributes.color.needsUpdate=true;
+ // tracer
+ tx+=.9*vel(tx)*sp*dt;tph+=(tx>-4.5&&tx<-1.5||tx>.2&&tx<3.9?2:.5)*sp*dt;
+ if(tx>5.8){tx=-6.3;trail.length=0}
+ place(tx,tf,tph,tpos,0);tcol(temp(tx),tcl,0);
+ tracer.position.set(tpos[0],tpos[1],tpos[2]);tracer.material.color.setRGB(tcl[0],tcl[1],tcl[2]);
+ trail.push(tracer.position.clone());if(trail.length>TL)trail.shift();tgeo.setFromPoints(trail);
+ fl.position.set(off(-.65),0,0);fl.intensity=1+Math.sin(clock*23)*.15+Math.sin(clock*9)*.15;
+ // camera
+ if(follow){tgtGoal.copy(tracer.position);sel=stageAt(tx)}
+ else if(sel>=0){tgtGoal.set(secs[sel].position.x+(XS[sel]+XS[sel+1])/2,0,0)}
+ tgt.lerp(tgtGoal,Math.min(1,dt*(follow?8:4)));dist+=(distGoal-dist)*Math.min(1,dt*4);
+ cam.position.set(tgt.x+dist*Math.sin(yaw)*Math.cos(pit),tgt.y+dist*Math.sin(pit),tgt.z+dist*Math.cos(yaw)*Math.cos(pit));cam.lookAt(tgt);
+ showInfo();R.render(scene,cam);requestAnimationFrame(frame)}
+showInfo();requestAnimationFrame(frame);
+</script></body></html>
